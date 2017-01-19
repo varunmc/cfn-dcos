@@ -1,0 +1,830 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: Highly Available DCOS Cluster
+
+Parameters:
+########## Bastion ##########
+  BastionKeyName:
+    Default: varunmc
+    Type: AWS::EC2::KeyPair::KeyName
+
+  BastionImageId:
+    Default: ami-6d1c2007
+    Type: String
+
+  BastionInstanceType:
+    Default: m4.large
+    Type: String
+
+########## Bootstrap ##########
+  BootstrapKeyName:
+    Default: varunmc
+    Type: AWS::EC2::KeyPair::KeyName
+
+  BootstrapImageId:
+    Default: ami-f56181e3
+    Type: String
+
+  BootstrapInstanceType:
+    Default: m4.large
+    Type: String
+
+########## Masters ##########
+  MasterKeyName:
+    Default: varunmc
+    Type: AWS::EC2::KeyPair::KeyName
+
+  MasterImageId:
+    Default: ami-f56181e3
+    Type: String
+
+  MasterGroupMaxSize:
+    Default: 3
+    Type: Number
+
+  MasterGroupMinSize:
+    Default: 1
+    Type: Number
+
+  MasterInstanceType:
+    Default: m4.large
+    Type: String
+
+########## Networks ##########
+  InternalNameServer:
+    Default: 10.0.0.2
+    Type: String
+
+  PrivateCidrBlockOne:
+    Default: 10.0.2.0/24
+    Type: String
+
+  PrivateCidrBlockTwo:
+    Default: 10.0.3.0/24
+    Type: String
+
+  PublicCidrBlock:
+    Default: 10.0.1.0/24
+    Type: String
+
+  VpcCidrBlock:
+    Default: 10.0.0.0/16
+    Type: String
+
+########## Slaves ##########
+  SlaveKeyName:
+    Default: varunmc
+    Type: AWS::EC2::KeyPair::KeyName
+
+  SlaveImageId:
+    Default: ami-f56181e3
+    Type: String
+
+  SlaveGroupMaxSize:
+    Default: 18
+    Type: Number
+
+  SlaveGroupMinSize:
+    Default: 6
+    Type: Number
+
+  SlaveInstanceType:
+    Default: m4.large
+    Type: String
+
+  StackCreationTimeout:
+    Default: PT60M
+    Type: String
+
+####################################################################################################
+Resources:
+
+########## Networks ##########
+  Vpc:
+    Type: AWS::EC2::VPC
+    Properties:
+      CidrBlock: !Ref VpcCidrBlock
+      EnableDnsHostnames: true
+      EnableDnsSupport: true
+      Tags:
+        - Key: Name
+          Value: DCOS VPC
+        - Key: Stack
+          Value: DCOS
+
+  PublicSubnet:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1a
+      CidrBlock: !Ref PublicCidrBlock
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Public SN
+        - Key: Stack
+          Value: DCOS
+
+  PrivateSubnetOne:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1b
+      CidrBlock: !Ref PrivateCidrBlockOne
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Private SN1
+        - Key: Stack
+          Value: DCOS
+
+  PrivateSubnetTwo:
+    Type: AWS::EC2::Subnet
+    Properties:
+      AvailabilityZone: us-east-1c
+      CidrBlock: !Ref PrivateCidrBlockTwo
+      MapPublicIpOnLaunch: true
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Private SN2
+        - Key: Stack
+          Value: DCOS
+
+########## Gateways ##########
+  InternetGateway:
+    Type: AWS::EC2::InternetGateway
+    Properties:
+      Tags:
+        - Key: Name
+          Value: DCOS IGW
+        - Key: Stack
+          Value: DCOS
+
+  InternetVpcGatewayAttachment:
+    Type: AWS::EC2::VPCGatewayAttachment
+    Properties:
+      InternetGatewayId: !Ref InternetGateway
+      VpcId: !Ref Vpc
+
+  NatElasticIp:
+    Type: AWS::EC2::EIP
+    DependsOn: Vpc
+    Properties:
+      Domain: vpc
+
+  NatGateway:
+    Type: AWS::EC2::NatGateway
+    Properties:
+      AllocationId: !GetAtt [NatElasticIp, AllocationId]
+      SubnetId: !Ref PublicSubnet
+
+########## Network ACLs ##########
+  PublicNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Public ACL
+        - Key: Stack
+          Value: DCOS
+
+  PublicSubnetNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PublicNetworkAcl
+      SubnetId: !Ref PublicSubnet
+
+  PrivateNetworkAcl:
+    Type: AWS::EC2::NetworkAcl
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Private ACL
+        - Key: Stack
+          Value: DCOS
+
+  PrivateSubnetOneNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      SubnetId: !Ref PrivateSubnetOne
+
+  PrivateSubnetTwoNetworkAclAssociation:
+    Type: AWS::EC2::SubnetNetworkAclAssociation
+    Properties:
+      NetworkAclId: !Ref PrivateNetworkAcl
+      SubnetId: !Ref PrivateSubnetTwo
+
+########## Major ACL Entries ##########
+  AllIngressPublicNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PublicNetworkAcl
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: 100
+
+  AllEgressPublicNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PublicNetworkAcl
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: 100
+
+  AllIngressPrivateNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: false
+      NetworkAclId: !Ref PrivateNetworkAcl
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: 100
+
+  AllEgressPrivateNetworkAclEntry:
+    Type: AWS::EC2::NetworkAclEntry
+    Properties:
+      CidrBlock: 0.0.0.0/0
+      Egress: true
+      NetworkAclId: !Ref PrivateNetworkAcl
+      Protocol: -1
+      RuleAction: allow
+      RuleNumber: 100
+
+########## Route Tables ##########
+  PublicRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Public RT
+        - Key: Stack
+          Value: DCOS
+
+  PublicSubnetRta:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      SubnetId: !Ref PublicSubnet
+
+  PrivateRouteTable:
+    Type: AWS::EC2::RouteTable
+    Properties:
+      VpcId: !Ref Vpc
+      Tags:
+        - Key: Name
+          Value: DCOS Private RT
+        - Key: Stack
+          Value: DCOS
+
+  PrivateSubnetOneRta:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetOne
+
+  PrivateSubnetTwoRta:
+    Type: AWS::EC2::SubnetRouteTableAssociation
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      SubnetId: !Ref PrivateSubnetTwo
+
+########## Major Routes ##########
+  PublicRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PublicRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      GatewayId: !Ref InternetGateway
+
+  PrivateRoute:
+    Type: AWS::EC2::Route
+    Properties:
+      RouteTableId: !Ref PrivateRouteTable
+      DestinationCidrBlock: 0.0.0.0/0
+      NatGatewayId: !Ref NatGateway
+
+########## S3 ##########
+  Store:
+    Type: AWS::S3::Bucket
+    Properties:
+      Tags:
+        - Key: Name
+          Value: DCOS Store
+        - Key: Stack
+          Value: DCOS
+
+########## Bastion ##########
+  BastionInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+
+  BastionInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BastionInstanceRole
+
+  BastionSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bastion Security Group
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      Tags:
+        - Key: Name
+          Value: DCOS Bastion SG
+        - Key: Stack
+          Value: DCOS
+
+  BastionInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: !Ref StackCreationTimeout
+    DependsOn:
+      - AllEgressPublicNetworkAclEntry
+      - PublicRoute
+      - PublicSubnetNetworkAclAssociation
+      - PublicSubnetRta
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 60
+      EbsOptimized: true
+      IamInstanceProfile: !Ref BastionInstanceProfile
+      ImageId: !Ref BastionImageId
+      InstanceType: !Ref BastionInstanceType
+      KeyName: !Ref BastionKeyName
+      SecurityGroupIds:
+        - !Ref BastionSecurityGroup
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: DCOS Bastion
+        - Key: Stack
+          Value: DCOS
+      UserData:
+        Fn::Base64: !Sub |
+          #! /bin/bash -x
+
+          # bootstrap
+          cat <<- EOF > /opt/bootstrap.sh
+            #! /bin/bash
+
+            yum -y update
+            yum install -y epel-release
+            yum -y groupinstall "GNOME Desktop"
+            yum install -y pystache python-daemon python34-pip tigervnc-server
+
+            pip3.4 install --upgrade pip awscli
+            wget -O /opt/aws-cfn-bootstrap-latest.amzn1.noarch.rpm https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.amzn1.noarch.rpm
+            rpm -i /opt/aws-cfn-bootstrap-latest.amzn1.noarch.rpm
+            ln -s /usr/local/lib/python2.7/site-packages/cfnbootstrap /usr/lib/python2.7/site-packages/cfnbootstrap
+
+            cp /lib/systemd/system/vncserver@.service /etc/systemd/system/vncserver@:1.service
+            sed -i 's/<USER>/centos/g' /etc/systemd/system/vncserver@:1.service
+            sed -i 's/^\(ExecStart=.*\)"$/\1 -geometry 1920x1080"/' /etc/systemd/system/vncserver@:1.service
+            su - centos -c 'mkdir -p /home/centos/.vnc'
+            su - centos -c 'echo -n centos | vncpasswd -f > /home/centos/.vnc/passwd'
+            chmod 600 /home/centos/.vnc/passwd
+
+            su - centos -c 'echo ${MasterLoadBalancer.DNSName} > /home/centos/DCOS-Master'
+
+            systemctl daemon-reload
+            systemctl enable vncserver@:1
+            systemctl start vncserver@:1
+          EOF
+
+          # execute
+          bash -xe /opt/bootstrap.sh
+
+          # completed
+          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource BastionInstance
+
+########## Bootstrap ##########
+  BootstrapInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  BootstrapInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref BootstrapInstanceRole
+
+  BootstrapSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Bootstrap Security Group
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      Tags:
+        - Key: Name
+          Value: DCOS Bootstrap SG
+        - Key: Stack
+          Value: DCOS
+
+  BootstrapInstance:
+    Type: AWS::EC2::Instance
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: !Ref StackCreationTimeout
+    DependsOn:
+      - AllEgressPublicNetworkAclEntry
+      - PublicRoute
+      - PublicSubnetNetworkAclAssociation
+      - PublicSubnetRta
+    Properties:
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 60
+      EbsOptimized: true
+      IamInstanceProfile: !Ref BootstrapInstanceProfile
+      ImageId: !Ref BootstrapImageId
+      InstanceType: !Ref BootstrapInstanceType
+      KeyName: !Ref BootstrapKeyName
+      SecurityGroupIds:
+        - !Ref BootstrapSecurityGroup
+      SubnetId: !Ref PublicSubnet
+      Tags:
+        - Key: Name
+          Value: DCOS Bootstrap
+        - Key: Stack
+          Value: DCOS
+      UserData:
+        Fn::Base64: !Sub |
+          #! /bin/bash -x
+
+          # aws
+          mkdir -p /opt/aws
+          cat <<- EOF > /opt/aws/Dockerfile
+          FROM ubuntu:latest
+
+          RUN apt-get update &&\
+            apt-get install -y python python-pip &&\
+            pip install --upgrade pip awscli https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          EOF
+
+          # dcos
+          mkdir -p /opt/genconf
+
+          cat <<- EOF > /opt/genconf/ip-detect
+          #! /bin/bash
+          curl -fsSL http://169.254.169.254/latest/meta-data/local-ipv4
+          EOF
+
+          cat <<- EOF > /opt/genconf/config.yaml
+          aws_region: ${AWS::Region}
+          bootstrap_url: file:///opt/dcos-install
+          cluster_name: Chiron
+          dns_search: ec2.internal
+          exhibitor_address: ${MasterLoadBalancer.DNSName}
+          exhibitor_explicit_keys: false
+          exhibitor_storage_backend: aws_s3
+          master_discovery: master_http_loadbalancer
+          num_masters: ${MasterGroupMinSize}
+          resolvers:
+            - ${InternalNameServer}
+          s3_bucket: ${Store}
+          s3_prefix: exhibitor.properties
+          security: disabled
+          EOF
+
+          # bootstrap
+          cat <<- EOF > /opt/bootstrap.sh
+          #! /bin/bash
+
+          docker build --force-rm -t aws/cli /opt/aws
+          wget -q -O /opt/dcos_generate_config.sh https://downloads.dcos.io/dcos/stable/dcos_generate_config.sh
+
+          cd /opt
+          bash dcos_generate_config.sh
+          tar -czf dcos-install.tgz -C /opt/genconf/serve .
+          cd -
+
+          docker run --rm -v /opt:/opt aws/cli aws s3 cp /opt/dcos-install.tgz s3://${Store}
+          EOF
+
+          # execute
+          bash -xe /opt/bootstrap.sh
+
+          # completed
+          docker run --rm aws/cli cfn-signal -e $? --stack ${AWS::StackName} --resource BootstrapInstance
+
+########## Masters ##########
+  MasterInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  MasterInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref MasterInstanceRole
+
+  MasterSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Master Security Group
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      Tags:
+        - Key: Name
+          Value: DCOS Master SG
+        - Key: Stack
+          Value: DCOS
+
+  MasterLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: false
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 60
+      EbsOptimized: true
+      IamInstanceProfile: !Ref MasterInstanceProfile
+      ImageId: ami-f56181e3
+      InstanceType: m4.large
+      KeyName: varunmc
+      SecurityGroups:
+        - !Ref MasterSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #! /bin/bash -x
+
+          # aws
+          mkdir -p /opt/aws
+          cat <<- EOF > /opt/aws/Dockerfile
+          FROM ubuntu:latest
+
+          RUN apt-get update &&\
+            apt-get install -y python python-pip &&\
+            pip install --upgrade pip awscli https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          EOF
+
+          # bootstrap
+          cat <<- EOF > /opt/bootstrap.sh
+          #! /bin/bash
+
+          docker build --force-rm -t aws/cli /opt/aws
+          docker run -v /opt:/opt aws/cli aws s3 cp s3://${Store}/dcos-install.tgz /opt
+
+          mkdir -p /opt/dcos-install
+          tar -xzf /opt/dcos-install.tgz -C /opt/dcos-install
+          bash /opt/dcos-install/dcos_install.sh master
+          EOF
+
+          # execute
+          bash -xe /opt/bootstrap.sh
+
+          # completed
+          docker run --rm aws/cli cfn-signal -e $? --stack ${AWS::StackName} --resource MasterAutoScalingGroup
+
+  MasterLoadBalancer:
+    Type: AWS::ElasticLoadBalancing::LoadBalancer
+    Properties:
+      CrossZone: true
+      Listeners:
+        - InstancePort: 80
+          InstanceProtocol: HTTP
+          LoadBalancerPort: 80
+          Protocol: HTTP
+        - InstancePort: 2181
+          InstanceProtocol: TCP
+          LoadBalancerPort: 2181
+          Protocol: TCP
+        - InstancePort: 5050
+          InstanceProtocol: TCP
+          LoadBalancerPort: 5050
+          Protocol: TCP
+        - InstancePort: 8181
+          InstanceProtocol: HTTP
+          LoadBalancerPort: 8080
+          Protocol: HTTP
+      Scheme: internal
+      SecurityGroups:
+        - !Ref MasterSecurityGroup
+      Subnets:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+      Tags:
+        - Key: Name
+          Value: DCOS Master ELB
+        - Key: Stack
+          Value: DCOS
+
+  MasterAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref MasterGroupMinSize
+        Timeout: !Ref StackCreationTimeout
+    DependsOn:
+      - BootstrapInstance
+    Properties:
+      LoadBalancerNames:
+        - !Ref MasterLoadBalancer
+      LaunchConfigurationName: !Ref MasterLaunchConfiguration
+      MaxSize: !Ref MasterGroupMaxSize
+      MinSize: !Ref MasterGroupMinSize
+      Tags:
+        - Key: Name
+          Value: Master ASG
+          PropagateAtLaunch: true
+        - Key: Stack
+          Value: DCOS
+          PropagateAtLaunch: true
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
+
+########## Slaves ##########
+  SlaveInstanceRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: 2012-10-17
+        Statement:
+          - Effect: Allow
+            Action:
+              - sts:AssumeRole
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonS3FullAccess
+
+  SlaveInstanceProfile:
+    Type: AWS::IAM::InstanceProfile
+    Properties:
+      Path: /
+      Roles:
+        - !Ref SlaveInstanceRole
+
+  SlaveSecurityGroup:
+    Type: AWS::EC2::SecurityGroup
+    Properties:
+      GroupDescription: Slave Security Group
+      VpcId: !Ref Vpc
+      SecurityGroupIngress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      SecurityGroupEgress:
+        - CidrIp: 0.0.0.0/0
+          IpProtocol: -1
+          FromPort: 0
+          ToPort: 65535
+      Tags:
+        - Key: Name
+          Value: DCOS Slave SG
+        - Key: Stack
+          Value: DCOS
+
+  SlaveLaunchConfiguration:
+    Type: AWS::AutoScaling::LaunchConfiguration
+    Properties:
+      AssociatePublicIpAddress: false
+      BlockDeviceMappings:
+        - DeviceName: /dev/xvda
+          Ebs:
+            DeleteOnTermination: true
+            VolumeSize: 60
+      EbsOptimized: true
+      IamInstanceProfile: !Ref SlaveInstanceProfile
+      ImageId: ami-f56181e3
+      InstanceType: m4.large
+      KeyName: varunmc
+      SecurityGroups:
+        - !Ref SlaveSecurityGroup
+      UserData:
+        Fn::Base64: !Sub |
+          #! /bin/bash -x
+
+          # aws
+          mkdir -p /opt/aws
+          cat <<- EOF > /opt/aws/Dockerfile
+          FROM ubuntu:latest
+
+          RUN apt-get update &&\
+            apt-get install -y python python-pip &&\
+            pip install --upgrade pip awscli https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.tar.gz
+          EOF
+
+          # bootstrap
+          cat <<- EOF > /opt/bootstrap.sh
+          #! /bin/bash
+
+          docker build --force-rm -t aws/cli /opt/aws
+          docker run -v /opt:/opt aws/cli aws s3 cp s3://${Store}/dcos-install.tgz /opt
+
+          mkdir -p /opt/dcos-install
+          tar -xzf /opt/dcos-install.tgz -C /opt/dcos-install
+          bash /opt/dcos-install/dcos_install.sh slave
+          EOF
+
+          # execute
+          bash -xe /opt/bootstrap.sh
+
+          # completed
+          docker run --rm aws/cli cfn-signal -e $? --stack ${AWS::StackName} --resource SlaveAutoScalingGroup
+
+  SlaveAutoScalingGroup:
+    Type: AWS::AutoScaling::AutoScalingGroup
+    CreationPolicy:
+      ResourceSignal:
+        Count: !Ref SlaveGroupMinSize
+        Timeout: !Ref StackCreationTimeout
+    DependsOn:
+      - BootstrapInstance
+    Properties:
+      LaunchConfigurationName: !Ref SlaveLaunchConfiguration
+      MaxSize: !Ref SlaveGroupMaxSize
+      MinSize: !Ref SlaveGroupMinSize
+      Tags:
+        - Key: Name
+          Value: Slave ASG
+          PropagateAtLaunch: true
+        - Key: Stack
+          Value: DCOS
+          PropagateAtLaunch: true
+      VPCZoneIdentifier:
+        - !Ref PrivateSubnetOne
+        - !Ref PrivateSubnetTwo
