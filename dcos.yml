@@ -675,9 +675,9 @@ Resources:
           Protocol: TCP
         - InstancePort: 8181
           InstanceProtocol: HTTP
-          LoadBalancerPort: 8080
+          LoadBalancerPort: 8181
           Protocol: HTTP
-      Scheme: internal
+      Scheme: internet-facing
       SecurityGroups:
         - !Ref MasterSecurityGroup
       Subnets:
