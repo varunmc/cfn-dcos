@@ -2,20 +2,6 @@ AWSTemplateFormatVersion: 2010-09-09
 Description: Highly Available DCOS Cluster
 
 Parameters:
-########## Bastion ##########
-  BastionKeyName:
-    Default: varunmc
-    Type: AWS::EC2::KeyPair::KeyName
-
-  BastionImageId:
-    Default: ami-6d1c2007
-    Type: String
-
-  BastionInstanceType:
-    Default: m4.large
-    Type: String
-
-########## Bootstrap ##########
   BootstrapKeyName:
     Default: varunmc
     Type: AWS::EC2::KeyPair::KeyName
@@ -28,7 +14,10 @@ Parameters:
     Default: m4.large
     Type: String
 
-########## Masters ##########
+  InternalNameServer:
+    Default: 10.0.0.2
+    Type: String
+
   MasterKeyName:
     Default: varunmc
     Type: AWS::EC2::KeyPair::KeyName
@@ -49,11 +38,6 @@ Parameters:
     Default: m4.large
     Type: String
 
-########## Networks ##########
-  InternalNameServer:
-    Default: 10.0.0.2
-    Type: String
-
   PrivateCidrBlockOne:
     Default: 10.0.2.0/24
     Type: String
@@ -66,11 +50,6 @@ Parameters:
     Default: 10.0.1.0/24
     Type: String
 
-  VpcCidrBlock:
-    Default: 10.0.0.0/16
-    Type: String
-
-########## Slaves ##########
   SlaveKeyName:
     Default: varunmc
     Type: AWS::EC2::KeyPair::KeyName
@@ -80,11 +59,11 @@ Parameters:
     Type: String
 
   SlaveGroupMaxSize:
-    Default: 18
+    Default: 9
     Type: Number
 
   SlaveGroupMinSize:
-    Default: 6
+    Default: 3
     Type: Number
 
   SlaveInstanceType:
@@ -95,9 +74,11 @@ Parameters:
     Default: PT60M
     Type: String
 
-####################################################################################################
-Resources:
+  VpcCidrBlock:
+    Default: 10.0.0.0/16
+    Type: String
 
+Resources:
 ########## Networks ##########
   Vpc:
     Type: AWS::EC2::VPC
@@ -321,115 +302,6 @@ Resources:
           Value: DCOS Store
         - Key: Stack
           Value: DCOS
-
-########## Bastion ##########
-  BastionInstanceRole:
-    Type: AWS::IAM::Role
-    Properties:
-      AssumeRolePolicyDocument:
-        Version: 2012-10-17
-        Statement:
-          - Effect: Allow
-            Action:
-              - sts:AssumeRole
-            Principal:
-              Service:
-                - ec2.amazonaws.com
-
-  BastionInstanceProfile:
-    Type: AWS::IAM::InstanceProfile
-    Properties:
-      Path: /
-      Roles:
-        - !Ref BastionInstanceRole
-
-  BastionSecurityGroup:
-    Type: AWS::EC2::SecurityGroup
-    Properties:
-      GroupDescription: Bastion Security Group
-      VpcId: !Ref Vpc
-      SecurityGroupIngress:
-        - CidrIp: 0.0.0.0/0
-          IpProtocol: -1
-          FromPort: 0
-          ToPort: 65535
-      SecurityGroupEgress:
-        - CidrIp: 0.0.0.0/0
-          IpProtocol: -1
-          FromPort: 0
-          ToPort: 65535
-      Tags:
-        - Key: Name
-          Value: DCOS Bastion SG
-        - Key: Stack
-          Value: DCOS
-
-  BastionInstance:
-    Type: AWS::EC2::Instance
-    CreationPolicy:
-      ResourceSignal:
-        Timeout: !Ref StackCreationTimeout
-    DependsOn:
-      - AllEgressPublicNetworkAclEntry
-      - PublicRoute
-      - PublicSubnetNetworkAclAssociation
-      - PublicSubnetRta
-    Properties:
-      BlockDeviceMappings:
-        - DeviceName: /dev/xvda
-          Ebs:
-            DeleteOnTermination: true
-            VolumeSize: 60
-      EbsOptimized: true
-      IamInstanceProfile: !Ref BastionInstanceProfile
-      ImageId: !Ref BastionImageId
-      InstanceType: !Ref BastionInstanceType
-      KeyName: !Ref BastionKeyName
-      SecurityGroupIds:
-        - !Ref BastionSecurityGroup
-      SubnetId: !Ref PublicSubnet
-      Tags:
-        - Key: Name
-          Value: DCOS Bastion
-        - Key: Stack
-          Value: DCOS
-      UserData:
-        Fn::Base64: !Sub |
-          #! /bin/bash -x
-
-          # bootstrap
-          cat <<- EOF > /opt/bootstrap.sh
-            #! /bin/bash
-
-            yum -y update
-            yum install -y epel-release
-            yum -y groupinstall "GNOME Desktop"
-            yum install -y pystache python-daemon python34-pip tigervnc-server
-
-            pip3.4 install --upgrade pip awscli
-            wget -O /opt/aws-cfn-bootstrap-latest.amzn1.noarch.rpm https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-latest.amzn1.noarch.rpm
-            rpm -i /opt/aws-cfn-bootstrap-latest.amzn1.noarch.rpm
-            ln -s /usr/local/lib/python2.7/site-packages/cfnbootstrap /usr/lib/python2.7/site-packages/cfnbootstrap
-
-            cp /lib/systemd/system/vncserver@.service /etc/systemd/system/vncserver@:1.service
-            sed -i 's/<USER>/centos/g' /etc/systemd/system/vncserver@:1.service
-            sed -i 's/^\(ExecStart=.*\)"$/\1 -geometry 1920x1080"/' /etc/systemd/system/vncserver@:1.service
-            su - centos -c 'mkdir -p /home/centos/.vnc'
-            su - centos -c 'echo -n centos | vncpasswd -f > /home/centos/.vnc/passwd'
-            chmod 600 /home/centos/.vnc/passwd
-
-            su - centos -c 'echo ${MasterLoadBalancer.DNSName} > /home/centos/DCOS-Master'
-
-            systemctl daemon-reload
-            systemctl enable vncserver@:1
-            systemctl start vncserver@:1
-          EOF
-
-          # execute
-          bash -xe /opt/bootstrap.sh
-
-          # completed
-          /opt/aws/bin/cfn-signal -e $? --stack ${AWS::StackName} --resource BastionInstance
 
 ########## Bootstrap ##########
   BootstrapInstanceRole:

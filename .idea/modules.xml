@@ -2,7 +2,7 @@
 <project version="4">
   <component name="ProjectModuleManager">
     <modules>
-      <module fileurl="file://$PROJECT_DIR$/.idea/dcos.iml" filepath="$PROJECT_DIR$/.idea/dcos.iml" />
+      <module fileurl="file://$PROJECT_DIR$/cfn-dcos.iml" filepath="$PROJECT_DIR$/cfn-dcos.iml" />
     </modules>
   </component>
 </project>
